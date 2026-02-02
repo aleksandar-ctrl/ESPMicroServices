@@ -4,20 +4,31 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 func main() {
-	// "db" je ime servisa koje smo stavili u docker-compose.yml
-	connStr := "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
+	connStr := "postgres://user:pass@db:5432/mojabaza"
+	var conn *pgx.Conn
+	var err error
 
-	conn, err := pgx.Connect(context.Background(), connStr)
+	// Pokušaj 10 puta, jednom svake sekunde
+	for i := 0; i < 10; i++ {
+		fmt.Printf("Pokušaj povezivanja na bazu... (%d/10)\n", i+1)
+		conn, err = pgx.Connect(context.Background(), connStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Neuspešno povezivanje na bazu: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Baza nije dostupna nakon 10 pokušaja: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close(context.Background())
 
-	fmt.Println("Uspešno povezan na Postgres unutar Dockera!")
+	fmt.Println("KONAČNO! Uspešno povezan na Postgres!")
 }
