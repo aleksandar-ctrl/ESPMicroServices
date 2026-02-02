@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// "db" je ime servisa koje smo stavili u docker-compose.yml
-	connStr := "postgres://user:pass@db:5432/mojabaza"
+	connStr := "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
 
 	conn, err := pgx.Connect(context.Background(), connStr)
 	if err != nil {
