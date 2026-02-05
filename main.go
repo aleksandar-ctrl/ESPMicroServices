@@ -97,22 +97,27 @@ func main() {
 				th { background-color: #eee; }
 			</style>
 			<script>
-				function updateData() {
-					fetch('/')
-						.then(response => response.text())
-						.then(html => {
-							const parser = new DOMParser();
-							const doc = parser.parseFromString(html, 'text/html');
-
-							const newTemp = doc.querySelector('.main-temp').innerHTML;
-							document.querySelector('.main-temp').innerHTML = newTemp;
-
-							const newTable = doc.querySelector('table').innerHTML;
-							document.querySelector('table').innerHTML = newTable;
-						});
-				}
-				setInterval(updateData, 2000);
-			</script>
+    			function update() {
+		    	    fetch('/')
+        	    		.then(response => response.text())
+            			.then(html => {
+                			const parser = new DOMParser();
+			                const doc = parser.parseFromString(html, 'text/html');
+                
+			                const newTemp = doc.querySelector('.main-temp');
+            			    const newTable = doc.querySelector('table');
+                
+                			if (newTemp && newTemp.innerHTML.trim() !== "") {
+			                    document.querySelector('.main-temp').innerHTML = newTemp.innerHTML;
+            			    }
+                			if (newTable) {
+			                    document.querySelector('table').innerHTML = newTable.innerHTML;
+            			    }
+            			})
+           		 .catch(err => console.error('Greška:', err));
+    			}	
+			setInterval(update, 3000);
+		</script>
 		</head>
 		<body>
 			<h1>Trenutna temperatura:</h1>
