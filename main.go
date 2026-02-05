@@ -17,6 +17,10 @@ type Log struct {
 }
 
 func main() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
+	}
 	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
@@ -24,7 +28,6 @@ func main() {
 	}
 	defer conn.Close(context.Background())
 
-	// Osiguravamo da je kolona temperatura TEXT
 	conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS logovi (
 		id SERIAL PRIMARY KEY, 
 		temperatura TEXT, 
@@ -35,7 +38,6 @@ func main() {
 		temp := r.URL.Query().Get("temp")
 		if temp != "" {
 			fmt.Printf("🚀 ESP poslao: %s\n", temp)
-			// Dodajemo "°C" odmah pri upisu u bazu ako već nema
 			tempFormat := temp + "°C"
 			_, err := conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", tempFormat, "ESP32_DATA")
 			if err != nil {
@@ -86,7 +88,7 @@ func main() {
 			</style>
 		</head>
 		<body>
-			<h1>🌡️ Trenutna temperatura:</h1>
+			<h1>Trenutna temperatura:</h1>
 			<div class="main-temp">{{.Zadnja}}</div>
 			
 			<div>
@@ -113,6 +115,6 @@ func main() {
 		}{Logs: logs, Zadnja: zadnjaTemp})
 	})
 
-	fmt.Println("🚀 Server spreman na portu 8080!")
+	fmt.Println("Server spreman na portu 8080!")
 	http.ListenAndServe(":8080", nil)
 }
