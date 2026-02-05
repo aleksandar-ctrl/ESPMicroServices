@@ -11,20 +11,26 @@ import (
 )
 
 type Log struct {
-	Temp  string
-	Boja  string
-	Vreme string
+	Temp     string
+	DeviceID string
+	Vreme    string
+}
+
+type Stats struct {
+	Avg string
+	Min string
+	Max string
 }
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
+		dbURL = "postgres://root:aca01234@db:5432/mojabaza?sslmode=disable"
 	}
 
 	conn, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Greska: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close(context.Background())
@@ -32,41 +38,36 @@ func main() {
 	conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS logovi (
 		id SERIAL PRIMARY KEY, 
 		temperatura TEXT, 
-		boja TEXT, 
+		device_id TEXT, 
 		vreme TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
 
 	http.HandleFunc("/esp", func(w http.ResponseWriter, r *http.Request) {
 		temp := r.URL.Query().Get("temp")
+		mac := r.URL.Query().Get("mac")
 		if temp != "" {
-			tempFormat := temp + "C"
-			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", tempFormat, "ESP32_DATA")
+			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)", temp+"C", mac)
 		}
-
-		var zadnjaBoja string
-		err := conn.QueryRow(context.Background(), "SELECT boja FROM logovi WHERE temperatura = 'Komanda' ORDER BY id DESC LIMIT 1").Scan(&zadnjaBoja)
-		if err == nil {
-			fmt.Fprint(w, zadnjaBoja)
-		} else {
-			fmt.Fprint(w, "None")
-		}
+		var zadnja string
+		conn.QueryRow(context.Background(), "SELECT device_id FROM logovi WHERE temperatura = 'Komanda' ORDER BY id DESC LIMIT 1").Scan(&zadnja)
+		fmt.Fprint(w, zadnja)
 	})
 
 	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		boja := r.URL.Query().Get("color")
 		if boja != "" {
-			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", "Komanda", boja)
+			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)", "Komanda", boja)
 		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rows, _ := conn.Query(context.Background(), "SELECT temperatura, boja, TO_CHAR(vreme, 'HH24:MI:SS') FROM logovi ORDER BY id DESC LIMIT 10")
+		// Zadnjih 10 logova
+		rows, _ := conn.Query(context.Background(), "SELECT temperatura, device_id, TO_CHAR(vreme, 'HH24:MI:SS') FROM logovi ORDER BY id DESC LIMIT 10")
 		var logs []Log
 		zadnjaTemp := "--"
-
 		for rows.Next() {
 			var l Log
-			rows.Scan(&l.Temp, &l.Boja, &l.Vreme)
+			rows.Scan(&l.Temp, &l.DeviceID, &l.Vreme)
 			logs = append(logs, l)
 		}
 		if len(logs) > 0 {
@@ -78,72 +79,78 @@ func main() {
 			}
 		}
 
+		var st Stats
+		// statistika za danas
+		conn.QueryRow(context.Background(), `
+			SELECT 
+				COALESCE(ROUND(AVG(NULLIF(regexp_replace(temperatura, '[^0-9.]', '', 'g'), '')::numeric), 2)::text, '--'),
+				COALESCE(MIN(temperatura), '--'),
+				COALESCE(MAX(temperatura), '--')
+			FROM logovi WHERE vreme >= CURRENT_DATE AND temperatura != 'Komanda'`).Scan(&st.Avg, &st.Min, &st.Max)
+
 		tmpl := `
 		<!DOCTYPE html>
 		<html>
 		<head>
-			<title>ESP32 Dashboard</title>
-			<meta http-equiv="refresh" content="5">
+			<title>ESP32 Analitika</title>
+			<meta name="viewport" content="width=device-width, initial-scale=1">
 			<style>
-				body { font-family: Arial; text-align: center; background-color: #f4f4f4; }
-				.main-temp { font-size: 80px; font-weight: bold; margin: 40px 0; color: #333; }
-				.btn { padding: 15px 25px; font-size: 18px; cursor: pointer; margin: 5px; border-radius: 5px; border: 1px solid #ccc; }
-				.btn-white { background: white; }
-				.btn-green { background: #4CAF50; color: white; }
-				.btn-red { background: #f44336; color: white; }
-				.btn-off { background: #333; color: white; }
-				table { margin: 30px auto; border-collapse: collapse; width: 50%; background: white; }
-				th, td { border: 1px solid #ddd; padding: 12px; }
-				th { background-color: #eee; }
+				body { font-family: Arial; text-align: center; background: #f4f4f4; padding: 10px; }
+				.main-temp { font-size: 60px; font-weight: bold; color: #333; margin: 10px; }
+				.container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; }
+				.box { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); flex: 1; min-width: 300px; max-width: 500px; }
+				.btn { padding: 10px 15px; margin: 5px; text-decoration: none; display: inline-block; border-radius: 5px; color: black; border: 1px solid #ccc; font-weight: bold; }
+				.btn-white { background: white; } .btn-green { background: #4CAF50; color: white; }
+				.btn-red { background: #f44336; color: white; } .btn-off { background: #333; color: white; }
+				table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+				th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+				th { background: #eee; }
+				.stat-val { font-size: 20px; font-weight: bold; color: #007bff; }
 			</style>
 			<script>
-    			function update() {
-		    	    fetch('/')
-        	    		.then(response => response.text())
-            			.then(html => {
-                			const parser = new DOMParser();
-			                const doc = parser.parseFromString(html, 'text/html');
-                
-			                const newTemp = doc.querySelector('.main-temp');
-            			    const newTable = doc.querySelector('table');
-                
-                			if (newTemp && newTemp.innerHTML.trim() !== "") {
-			                    document.querySelector('.main-temp').innerHTML = newTemp.innerHTML;
-            			    }
-                			if (newTable) {
-			                    document.querySelector('table').innerHTML = newTable.innerHTML;
-            			    }
-            			})
-           		 .catch(err => console.error('Greška:', err));
-    			}	
-			setInterval(update, 3000);
-		</script>
+				function update() {
+					fetch("/").then(r => r.text()).then(html => {
+						let doc = new DOMParser().parseFromString(html, 'text/html');
+						document.body.innerHTML = doc.body.innerHTML;
+					});
+				}
+				setInterval(update, 5000);
+			</script>
 		</head>
 		<body>
-			<h1>Trenutna temperatura:</h1>
+			<h2>Trenutna temperatura:</h2>
 			<div class="main-temp">{{.Zadnja}}</div>
 			<div>
-				<a href="/control?color=Bela"><button class="btn btn-white">Bela</button></a>
-				<a href="/control?color=Zelena"><button class="btn btn-green">Zelena</button></a>
-				<a href="/control?color=Crvena"><button class="btn btn-red">Crvena</button></a>
-				<a href="/control?color=Off"><button class="btn btn-off">Ugaseno</button></a>
+				<a href="/control?color=Bela" class="btn btn-white">Bela</a>
+				<a href="/control?color=Zelena" class="btn btn-green">Zelena</a>
+				<a href="/control?color=Crvena" class="btn btn-red">Crvena</a>
+				<a href="/control?color=Off" class="btn btn-off">Off</a>
 			</div>
-			<h3>Poslednja ocitavanja:</h3>
-			<table>
-				<tr><th>Temp</th><th>Izvor/Boja</th><th>Vreme</th></tr>
-				{{range .Logs}}
-				<tr><td>{{.Temp}}</td><td>{{.Boja}}</td><td>{{.Vreme}}</td></tr>
-				{{end}}
-			</table>
+			<br>
+			<div class="container">
+				<div class="box">
+					<h3>Dnevni Izvestaj</h3>
+					<p>Prosek: <span class="stat-val">{{.St.Avg}}C</span></p>
+					<p>Min: <span class="stat-val">{{.St.Min}}</span> | Max: <span class="stat-val">{{.St.Max}}</span></p>
+				</div>
+				<div class="box">
+					<h3>Zadnjih 10 ocitavanja</h3>
+					<table>
+						<tr><th>Uredjaj (MAC)</th><th>Temp</th><th>Vreme</th></tr>
+						{{range .Logs}}
+						<tr><td>{{.DeviceID}}</td><td>{{.Temp}}</td><td>{{.Vreme}}</td></tr>
+						{{end}}
+					</table>
+				</div>
+			</div>
 		</body>
 		</html>`
-
-		t := template.Must(template.New("web").Parse(tmpl))
+		t := template.Must(template.New("w").Parse(tmpl))
 		t.Execute(w, struct {
 			Logs   []Log
 			Zadnja string
-		}{Logs: logs, Zadnja: zadnjaTemp})
+			St     Stats
+		}{logs, zadnjaTemp, st})
 	})
-
 	http.ListenAndServe(":8080", nil)
 }
