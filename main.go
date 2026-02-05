@@ -21,7 +21,7 @@ func main() {
 	if dbURL == "" {
 		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
 	}
-	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	conn, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
 		os.Exit(1)
