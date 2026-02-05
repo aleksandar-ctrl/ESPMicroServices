@@ -11,79 +11,78 @@ import (
 )
 
 func main() {
-	// 1. UZIMAMO ADRESU IZ DOCKER-COMPOSE ENVIRONMENTA
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
-		// Rezervna opcija ako pokrećeš van Dockera
 		connStr = "postgres://user:pass@localhost:5432/mojabaza"
 	}
 
 	var conn *pgx.Conn
 	var err error
-
-	// 2. RETRY LOGIKA (Čekamo da se baza probudi)
-	fmt.Println("Povezivanje na bazu...")
 	for i := 0; i < 10; i++ {
 		conn, err = pgx.Connect(context.Background(), connStr)
 		if err == nil {
 			break
 		}
-		fmt.Printf("Baza još nije spremna, pokušaj %d/10...\n", i+1)
 		time.Sleep(3 * time.Second)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Greška: Baza nije dostupna: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Baza nedostupna: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close(context.Background())
 
-	// 3. KREIRANJE TABELE (Automatski pri startu)
-	_, err = conn.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS logovi (
-			id SERIAL PRIMARY KEY,
-			temperatura INT,
-			boja TEXT,
-			vreme TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		fmt.Println("Greška pri kreiranju tabele:", err)
-	}
+	// Pravimo tabelu
+	conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS logovi (
+		id SERIAL PRIMARY KEY, 
+		temperatura TEXT, 
+		boja TEXT, 
+		vreme TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
 
-	// 4. FRONTEND (Glavna stranica sa temperaturom i dugmićima)
+	// GLAVNA STRANICA - ISPISUJE I PODATKE
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		temp := 25 // Simulirana temperatura
+		w.Header().Set("Content-Type", "text/html; charset=utf-8") // Popravlja kuke i motike
 
-		w.Header().Set("Content-Type", "text/html")
+		// Čitamo poslednjih 10 zapisa iz baze
+		rows, _ := conn.Query(context.Background(), "SELECT temperatura, boja, vreme FROM logovi ORDER BY vreme DESC LIMIT 10")
+		defer rows.Close()
+
+		tabela := "<table border='1' style='margin: 20px auto;'><tr><th>Temp</th><th>Boja</th><th>Vreme</th></tr>"
+		for rows.Next() {
+			var t, b string
+			var v time.Time
+			rows.Scan(&t, &b, &v)
+			tabela += fmt.Sprintf("<tr><td>%s°C</td><td>%s</td><td>%s</td></tr>", t, b, v.Format("15:04:05"))
+		}
+		tabela += "</table>"
+
 		fmt.Fprintf(w, `
-			<div style="text-align: center; font-family: Arial; margin-top: 100px;">
-				<h1>🌡️ Trenutna temperatura: %d°C</h1>
-				<h3>Izaberi akciju:</h3>
-				<a href="/promeni?boja=Bela"><button style="background: white; padding: 10px;">Bela</button></a>
-				<a href="/promeni?boja=Zelena"><button style="background: green; color: white; padding: 10px;">Zelena</button></a>
-				<a href="/promeni?boja=Crvena"><button style="background: red; color: white; padding: 10px;">Crvena</button></a>
-				<a href="/promeni?boja=Ugaseno"><button style="background: black; color: white; padding: 10px;">Ugaseno</button></a>
+			<div style="text-align: center; font-family: Arial;">
+				<h1>🌡️ Trenutna temperatura: 25°C</h1>
+				<a href="/promeni?boja=Zelena"><button>Zelena</button></a>
+				<a href="/promeni?boja=Crvena"><button>Crvena</button></a>
+				<hr>
+				<h3>Poslednja očitavanja:</h3>
+				%s
 			</div>
-		`, temp)
+		`, tabela)
 	})
 
-	// 5. LOGIKA UPISA (Kada klikneš dugme)
+	// ENDPOINT ZA ESP
+	http.HandleFunc("/esp", func(w http.ResponseWriter, r *http.Request) {
+		temp := r.URL.Query().Get("temp")
+		conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", temp, "ESP32_DATA")
+		fmt.Println("ESP poslao:", temp)
+		w.WriteHeader(200)
+	})
+
+	// ENDPOINT ZA DUGMAD
 	http.HandleFunc("/promeni", func(w http.ResponseWriter, r *http.Request) {
 		boja := r.URL.Query().Get("boja")
-		temp := 25
-
-		_, err := conn.Exec(context.Background(),
-			"INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", temp, boja)
-
-		if err != nil {
-			http.Error(w, "Greška pri upisu u bazu", 500)
-			return
-		}
-
-		fmt.Fprintf(w, "Upisano: Boja %s, Temp %d. <br><a href='/'>Nazad</a>", boja, temp)
+		conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", "25", boja)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 
-	fmt.Println("🚀 Server startovan na http://localhost:8080")
+	fmt.Println("🚀 Server spreman!")
 	http.ListenAndServe(":8080", nil)
 }
