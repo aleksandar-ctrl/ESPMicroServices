@@ -19,7 +19,7 @@ type Log struct {
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://root:aca01234@db:5432/mojabaza?sslmode=disable"
+		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
 	}
 
 	conn, err := pgx.Connect(context.Background(), dbURL)
@@ -96,6 +96,23 @@ func main() {
 				th, td { border: 1px solid #ddd; padding: 12px; }
 				th { background-color: #eee; }
 			</style>
+			<script>
+				function updateData() {
+					fetch('/')
+						.then(response => response.text())
+						.then(html => {
+							const parser = new DOMParser();
+							const doc = parser.parseFromString(html, 'text/html');
+
+							const newTemp = doc.querySelector('.main-temp').innerHTML;
+							document.querySelector('.main-temp').innerHTML = newTemp;
+
+							const newTable = doc.querySelector('table').innerHTML;
+							document.querySelector('table').innerHTML = newTable;
+						});
+				}
+				setInterval(updateData, 2000);
+			</script>
 		</head>
 		<body>
 			<h1>Trenutna temperatura:</h1>
