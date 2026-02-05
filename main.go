@@ -19,8 +19,9 @@ type Log struct {
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
+		dbURL = "postgres://root:aca01234@db:5432/mojabaza?sslmode=disable"
 	}
+
 	conn, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
@@ -37,12 +38,16 @@ func main() {
 	http.HandleFunc("/esp", func(w http.ResponseWriter, r *http.Request) {
 		temp := r.URL.Query().Get("temp")
 		if temp != "" {
-			fmt.Printf("🚀 ESP poslao: %s\n", temp)
-			tempFormat := temp + "°C"
-			_, err := conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", tempFormat, "ESP32_DATA")
-			if err != nil {
-				fmt.Println("Greška pri upisu:", err)
-			}
+			tempFormat := temp + "C"
+			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, boja) VALUES ($1, $2)", tempFormat, "ESP32_DATA")
+		}
+
+		var zadnjaBoja string
+		err := conn.QueryRow(context.Background(), "SELECT boja FROM logovi WHERE temperatura = 'Komanda' ORDER BY id DESC LIMIT 1").Scan(&zadnjaBoja)
+		if err == nil {
+			fmt.Fprint(w, zadnjaBoja)
+		} else {
+			fmt.Fprint(w, "None")
 		}
 	})
 
@@ -64,9 +69,13 @@ func main() {
 			rows.Scan(&l.Temp, &l.Boja, &l.Vreme)
 			logs = append(logs, l)
 		}
-
 		if len(logs) > 0 {
-			zadnjaTemp = logs[0].Temp
+			for _, l := range logs {
+				if l.Temp != "Komanda" {
+					zadnjaTemp = l.Temp
+					break
+				}
+			}
 		}
 
 		tmpl := `
@@ -74,6 +83,7 @@ func main() {
 		<html>
 		<head>
 			<title>ESP32 Dashboard</title>
+			<meta http-equiv="refresh" content="5">
 			<style>
 				body { font-family: Arial; text-align: center; background-color: #f4f4f4; }
 				.main-temp { font-size: 80px; font-weight: bold; margin: 40px 0; color: #333; }
@@ -90,15 +100,13 @@ func main() {
 		<body>
 			<h1>Trenutna temperatura:</h1>
 			<div class="main-temp">{{.Zadnja}}</div>
-			
 			<div>
 				<a href="/control?color=Bela"><button class="btn btn-white">Bela</button></a>
 				<a href="/control?color=Zelena"><button class="btn btn-green">Zelena</button></a>
 				<a href="/control?color=Crvena"><button class="btn btn-red">Crvena</button></a>
-				<a href="/control?color=Off"><button class="btn btn-off">Ugašeno</button></a>
+				<a href="/control?color=Off"><button class="btn btn-off">Ugaseno</button></a>
 			</div>
-
-			<h3>Poslednja očitavanja:</h3>
+			<h3>Poslednja ocitavanja:</h3>
 			<table>
 				<tr><th>Temp</th><th>Izvor/Boja</th><th>Vreme</th></tr>
 				{{range .Logs}}
@@ -115,6 +123,5 @@ func main() {
 		}{Logs: logs, Zadnja: zadnjaTemp})
 	})
 
-	fmt.Println("Server spreman na portu 8080!")
 	http.ListenAndServe(":8080", nil)
 }
