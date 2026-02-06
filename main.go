@@ -6,7 +6,9 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"time"
 
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -23,47 +25,69 @@ type DeviceStats struct {
 	Max string
 }
 
+var dbConn *pgx.Conn
+var mqttClient mqtt.Client
+
 func main() {
+	// 1. Povezivanje sa bazom
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://user:pass@db:5432/mojabaza?sslmode=disable"
 	}
-
 	conn, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Greska pri povezivanju sa bazom: %v\n", err)
+		fmt.Printf("Baza nije dostupna: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close(context.Background())
+	dbConn = conn
+	defer dbConn.Close(context.Background())
 
-	conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS logovi (
+	// Kreiranje tabele ako ne postoji
+	dbConn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS logovi (
 		id SERIAL PRIMARY KEY, 
 		temperatura TEXT, 
 		device_id TEXT, 
 		vreme TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
 
-	http.HandleFunc("/esp", func(w http.ResponseWriter, r *http.Request) {
-		temp := r.URL.Query().Get("temp")
-		mac := r.URL.Query().Get("mac")
-		if temp != "" {
-			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)", temp+"C", mac)
-		}
-		var zadnja string
-		conn.QueryRow(context.Background(), "SELECT device_id FROM logovi WHERE temperatura = 'Komanda' ORDER BY id DESC LIMIT 1").Scan(&zadnja)
-		fmt.Fprint(w, zadnja)
+	// 2. MQTT Setup
+	brokerURL := os.Getenv("MQTT_BROKER")
+	if brokerURL == "" {
+		brokerURL = "tcp://mqtt:1883"
+	}
+	opts := mqtt.NewClientOptions().AddBroker(brokerURL)
+	opts.SetClientID("go_backend_server")
+
+	// Šta radimo kada stigne temperatura preko MQTT-a
+	opts.SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
+		tempVrednost := string(msg.Payload())
+		fmt.Printf("MQTT stiglo: %s\n", tempVrednost)
+		// Upisujemo u bazu
+		dbConn.Exec(context.Background(),
+			"INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)",
+			tempVrednost+"C", "ESP32_MQTT")
 	})
 
+	mqttClient = mqtt.NewClient(opts)
+	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+		fmt.Printf("MQTT Error: %v\n", token.Error())
+	}
+	mqttClient.Subscribe("esp32/temp", 0, nil)
+
+	// 3. HTTP Rute
 	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		boja := r.URL.Query().Get("color")
 		if boja != "" {
-			conn.Exec(context.Background(), "INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)", "Komanda", boja)
+			// Šaljemo komandu ESP-u trenutno preko MQTT-a
+			mqttClient.Publish("esp32/komande", 0, false, boja)
+			// Beležimo komandu u bazu
+			dbConn.Exec(context.Background(), "INSERT INTO logovi (temperatura, device_id) VALUES ($1, $2)", "Komanda", boja)
 		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// zadnjih 10 logova
-		rows, _ := conn.Query(context.Background(), "SELECT temperatura, COALESCE(device_id, 'Nepoznato'), TO_CHAR(vreme, 'HH24:MI:SS') FROM logovi ORDER BY id DESC LIMIT 10")
+		// Uzimamo zadnjih 10 logova
+		rows, _ := dbConn.Query(context.Background(), "SELECT temperatura, COALESCE(device_id, 'Nepoznato'), TO_CHAR(vreme, 'HH24:MI:SS') FROM logovi ORDER BY id DESC LIMIT 10")
 		var logs []Log
 		zadnjaTemp := "--"
 		for rows.Next() {
@@ -80,8 +104,8 @@ func main() {
 			}
 		}
 
-		// izvestaj za svaki uredjaj danas
-		rowsStats, _ := conn.Query(context.Background(), `
+		// Statistika po uređaju (koristi 'time' biblioteku unutar SQL-a preko CURRENT_DATE)
+		rowsStats, _ := dbConn.Query(context.Background(), `
 			SELECT 
 				device_id,
 				COALESCE(ROUND(AVG(NULLIF(regexp_replace(temperatura, '[^0-9.]', '', 'g'), '')::numeric), 2)::text, '--'),
@@ -89,9 +113,7 @@ func main() {
 				COALESCE(MAX(temperatura), '--')
 			FROM logovi 
 			WHERE vreme >= CURRENT_DATE 
-			  AND temperatura != 'Komanda' 
-			  AND device_id IS NOT NULL 
-			  AND device_id != ''
+			  AND temperatura != 'Komanda'
 			GROUP BY device_id`)
 
 		var stList []DeviceStats
@@ -101,90 +123,65 @@ func main() {
 			stList = append(stList, s)
 		}
 
-		tmpl := `
+		// HTML Template
+		tmplCode := `
 		<!DOCTYPE html>
 		<html>
 		<head>
-			<title>IoT Dashboard</title>
+			<title>MQTT IoT Dashboard</title>
 			<meta name="viewport" content="width=device-width, initial-scale=1">
 			<style>
-				body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f0f2f5; padding: 10px; color: #333; }
-				.main-temp { font-size: 65px; font-weight: bold; color: #2c3e50; margin: 10px 0; text-shadow: 1px 1px 2px rgba(0,0,0,0.1); }
-				.container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; margin-top: 20px; }
-				.box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; min-width: 320px; max-width: 550px; }
-				.btn { padding: 12px 20px; margin: 5px; text-decoration: none; display: inline-block; border-radius: 8px; color: black; border: 1px solid #ccc; font-weight: bold; transition: 0.3s; }
-				.btn:hover { opacity: 0.8; transform: translateY(-2px); }
-				.btn-white { background: #fff; } .btn-green { background: #2ecc71; color: white; border: none; }
-				.btn-red { background: #e74c3c; color: white; border: none; } .btn-off { background: #34495e; color: white; border: none; }
-				table { width: 100%; border-collapse: collapse; margin-top: 15px; background: #fff; }
-				th, td { border-bottom: 1px solid #eee; padding: 12px; text-align: left; }
-				th { background: #f8f9fa; color: #666; font-size: 12px; text-transform: uppercase; }
-				.stat-val { font-size: 18px; font-weight: bold; color: #3498db; }
-				.mac-label { font-family: monospace; color: #7f8c8d; font-size: 12px; }
+				body { font-family: sans-serif; text-align: center; background: #f4f4f4; padding: 20px; }
+				.main-temp { font-size: 50px; font-weight: bold; color: #2c3e50; }
+				.box { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin: 10px auto; max-width: 600px; }
+				.btn { padding: 15px 25px; margin: 5px; border-radius: 5px; text-decoration: none; color: white; font-weight: bold; display: inline-block; }
+				.btn-red { background: #e74c3c; } .btn-green { background: #2ecc71; } .btn-off { background: #34495e; }
+				table { width: 100%; margin-top: 20px; border-collapse: collapse; }
+				th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
 			</style>
 			<script>
 				function update() {
-        			fetch("/").then(r => r.text()).then(html => {
-			            let doc = new DOMParser().parseFromString(html, 'text/html');
-			            document.querySelector('.container').innerHTML = doc.querySelector('.container').innerHTML;
-            			document.querySelector('.main-temp').innerHTML = doc.querySelector('.main-temp').innerHTML;
-        			});
+					fetch("/").then(r => r.text()).then(html => {
+						let doc = new DOMParser().parseFromString(html, 'text/html');
+						document.body.innerHTML = doc.body.innerHTML;
+					});
 				}
-				setInterval(update, 5000);
+				setInterval(update, 2000);
 			</script>
 		</head>
 		<body>
-			<p style="margin-bottom:0; color: #7f8c8d;">Zadnje očitavanje:</p>
+			<h1>IoT Control Center</h1>
 			<div class="main-temp">{{.Zadnja}}</div>
 			
-			<div class="controls">
-				<a href="/control?color=Bela" class="btn btn-white">BELA</a>
-				<a href="/control?color=Zelena" class="btn btn-green">ZELENA</a>
+			<div class="box">
 				<a href="/control?color=Crvena" class="btn btn-red">CRVENA</a>
+				<a href="/control?color=Zelena" class="btn btn-green">ZELENA</a>
 				<a href="/control?color=Off" class="btn btn-off">OFF</a>
 			</div>
 
-			<div class="container">
-				<div class="box">
-					<h3 style="margin-top:0;">Dnevni prosek po uređaju</h3>
-					<table>
-						<thead>
-							<tr><th>Uređaj (MAC)</th><th>Prosek</th><th>Min / Max</th></tr>
-						</thead>
-						<tbody>
-							{{range .StList}}
-							<tr>
-								<td class="mac-label">{{.MAC}}</td>
-								<td class="stat-val">{{.Avg}}°C</td>
-								<td style="font-size: 12px;">{{.Min}} / {{.Max}}</td>
-							</tr>
-							{{end}}
-						</tbody>
-					</table>
-				</div>
+			<div class="box">
+				<h3>Dnevna Statistika</h3>
+				<table>
+					<tr><th>Uređaj</th><th>Prosek</th><th>Min/Max</th></tr>
+					{{range .StList}}
+					<tr><td>{{.MAC}}</td><td>{{.Avg}}C</td><td>{{.Min}}/{{.Max}}</td></tr>
+					{{end}}
+				</table>
+			</div>
 
-				<div class="box">
-					<h3 style="margin-top:0;">Poslednjih 10 zapisa</h3>
-					<table>
-						<thead>
-							<tr><th>Uređaj</th><th>Vrednost</th><th>Vreme</th></tr>
-						</thead>
-						<tbody>
-							{{range .Logs}}
-							<tr>
-								<td class="mac-label">{{.DeviceID}}</td>
-								<td><strong>{{.Temp}}</strong></td>
-								<td style="color: #95a5a6;">{{.Vreme}}</td>
-							</tr>
-							{{end}}
-						</tbody>
-					</table>
-				</div>
+			<div class="box">
+				<h3>Poslednji zapisi</h3>
+				<table>
+					<tr><th>Uređaj</th><th>Vrednost</th><th>Vreme</th></tr>
+					{{range .Logs}}
+					<tr><td>{{.DeviceID}}</td><td>{{.Temp}}</td><td>{{.Vreme}}</td></tr>
+					{{end}}
+				</table>
 			</div>
 		</body>
 		</html>`
 
-		t := template.Must(template.New("w").Parse(tmpl))
+		t := template.Must(template.New("web").Parse(tmplCode))
 		t.Execute(w, struct {
 			Logs   []Log
 			Zadnja string
@@ -192,6 +189,12 @@ func main() {
 		}{logs, zadnjaTemp, stList})
 	})
 
-	fmt.Println("Server pokrenut na portu 8080...")
-	http.ListenAndServe(":8080", nil)
+	fmt.Println("Server pokrenut na portu 8080 (MQTT MOD)...")
+	// Dodajemo mali timeout za stabilnost servera
+	server := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	server.ListenAndServe()
 }

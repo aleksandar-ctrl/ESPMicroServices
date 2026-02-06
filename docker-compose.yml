@@ -1,29 +1,30 @@
+version: '3.8'
 services:
-  app:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - DB_URL=postgres://user:pass@db:5432/mojabaza?sslmode=disable
-    depends_on:
-        db:
-          condition: service_healthy
-
   db:
-    image: postgres:15-alpine
+    image: postgres
+    container_name: espmicroservices-db-1
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
       POSTGRES_DB: mojabaza
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d mojabaza"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
-volumes:
-  postgres_data:
+  mqtt:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+
+  app:
+    build: .
+    depends_on:
+      - db
+      - mqtt
+    environment:
+      DATABASE_URL: postgres://user:pass@db:5432/mojabaza?sslmode=disable
+      MQTT_BROKER: tcp://mqtt:1883
+    ports:
+      - "8080:8080"
