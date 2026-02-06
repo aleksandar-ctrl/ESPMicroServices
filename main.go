@@ -146,7 +146,7 @@ func main() {
 
 			<div class="container">
 				<div class="box">
-					<h3 style="margin-top:0;">📊 Dnevni prosek po uređaju</h3>
+					<h3 style="margin-top:0;">Dnevni prosek po uređaju</h3>
 					<table>
 						<thead>
 							<tr><th>Uređaj (MAC)</th><th>Prosek</th><th>Min / Max</th></tr>
@@ -164,7 +164,7 @@ func main() {
 				</div>
 
 				<div class="box">
-					<h3 style="margin-top:0;">🕒 Poslednjih 10 zapisa</h3>
+					<h3 style="margin-top:0;">Poslednjih 10 zapisa</h3>
 					<table>
 						<thead>
 							<tr><th>Uređaj</th><th>Vrednost</th><th>Vreme</th></tr>
