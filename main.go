@@ -124,11 +124,11 @@ func main() {
 			</style>
 			<script>
 				function update() {
-					fetch("/").then(r => r.text()).then(html => {
-						let doc = new DOMParser().parseFromString(html, 'text/html');
-						document.querySelector('.container').innerHTML = doc.querySelector('.container').innerHTML;
-						document.querySelector('.main-temp').innerHTML = doc.querySelector('.main-temp').innerHTML;
-					});
+        			fetch("/").then(r => r.text()).then(html => {
+			            let doc = new DOMParser().parseFromString(html, 'text/html');
+			            document.querySelector('.container').innerHTML = doc.querySelector('.container').innerHTML;
+            			document.querySelector('.main-temp').innerHTML = doc.querySelector('.main-temp').innerHTML;
+        			});
 				}
 				setInterval(update, 5000);
 			</script>
